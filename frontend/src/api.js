@@ -10,8 +10,14 @@ export const api = {
   }).then(r => r.json()),
   getTask: (id) => fetch(`${API_BASE}/api/tasks/${id}`).then(r => r.json()),
   getTaskLog: (id) => fetch(`${API_BASE}/api/tasks/${id}/log`).then(r => r.json()),
+  getTaskTrace: (id) => fetch(`${API_BASE}/api/tasks/${id}/trace`).then(r => r.json()),
   retryTask: (id) => fetch(`${API_BASE}/api/tasks/${id}/retry`, { method: 'POST' }).then(r => r.json()),
   cancelTask: (id) => fetch(`${API_BASE}/api/tasks/${id}/cancel`, { method: 'POST' }).then(r => r.json()),
+  continueTask: (id, message) => fetch(`${API_BASE}/api/tasks/${id}/continue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message })
+  }).then(r => r.json()),
   deleteTask: (id) => fetch(`${API_BASE}/api/tasks/${id}`, { method: 'DELETE' }).then(r => r.json()),
 };
 

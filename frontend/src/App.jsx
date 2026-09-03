@@ -8,6 +8,11 @@ function App() {
   const [prompt, setPrompt] = useState('')
   const [msg, setMsg] = useState('')
   const [selectedTask, setSelectedTask] = useState(null)
+  const [showTrace, setShowTrace] = useState(false)
+  const [traceData, setTraceData] = useState([])
+  const [traceLoading, setTraceLoading] = useState(false)
+  const [continueMsg, setContinueMsg] = useState('')
+  const [continueLoading, setContinueLoading] = useState(false)
   const [runningPage, setRunningPage] = useState(1)
   const [completedPage, setCompletedPage] = useState(1)
   const [pendingPage, setPendingPage] = useState(1)
@@ -69,6 +74,34 @@ function App() {
 
   const showTaskDetail = (task) => {
     setSelectedTask(task)
+    setShowTrace(false)
+    setTraceData([])
+    setContinueMsg('')
+  }
+
+  const loadTrace = async (taskId) => {
+    setTraceLoading(true)
+    try {
+      const data = await api.getTaskTrace(taskId)
+      setTraceData(data.trace || [])
+      setShowTrace(true)
+    } catch (e) {
+      console.error('load trace error:', e)
+    }
+    setTraceLoading(false)
+  }
+
+  const handleContinue = async () => {
+    if (!continueMsg.trim() || !selectedTask?.session_id) return
+    setContinueLoading(true)
+    try {
+      await api.continueTask(selectedTask.id, continueMsg)
+      setContinueMsg('')
+      loadTasks()
+    } catch (e) {
+      console.error('continue error:', e)
+    }
+    setContinueLoading(false)
   }
 
   useEffect(() => {
@@ -209,7 +242,44 @@ function App() {
               <strong>描述:</strong>
               <pre className="prompt-box">{selectedTask.prompt}</pre>
             </div>
-            <button className="btnClose" onClick={() => setSelectedTask(null)}>关闭</button>
+            <div className="detail-actions">
+              <button className="btnTrace" onClick={() => showTrace ? setShowTrace(false) : loadTrace(selectedTask.id)}>
+                {traceLoading ? '加载中...' : showTrace ? '收起执行过程' : '查看执行过程'}
+              </button>
+              <button className="btnClose" onClick={() => setSelectedTask(null)}>关闭</button>
+            </div>
+            {selectedTask.session_id && (
+              <div className="continue-panel">
+                <h4>继续会话</h4>
+                <textarea
+                  placeholder="输入继续对话的指令..."
+                  value={continueMsg}
+                  onChange={e => setContinueMsg(e.target.value)}
+                  className="continue-input"
+                />
+                <br />
+                <button className="btnContinue" onClick={handleContinue} disabled={continueLoading || !continueMsg.trim()}>
+                  {continueLoading ? '发送中...' : '发送'}
+                </button>
+              </div>
+            )}
+            {showTrace && (
+              <div className="trace-panel">
+                <h4>执行过程</h4>
+                {traceData.length === 0 ? (
+                  <p className="empty">暂无执行过程数据</p>
+                ) : (
+                  <div className="trace-list">
+                    {traceData.map((event, idx) => (
+                      <div key={idx} className={`trace-item trace-${event.type || 'unknown'}`}>
+                        <div className="trace-type">{event.type || 'unknown'}</div>
+                        <pre className="trace-content">{JSON.stringify(event, null, 2)}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </main>

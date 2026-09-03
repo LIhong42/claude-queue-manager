@@ -23,6 +23,8 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'PENDING',
             workspace TEXT NOT NULL,
             log_file TEXT NOT NULL,
+            trace_file TEXT,
+            session_id TEXT,
             pid INTEGER,
             retry_count INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 2,
@@ -34,13 +36,23 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
         """)
+        # Migration: add trace_file column if not exists
+        try:
+            c.execute("ALTER TABLE tasks ADD COLUMN trace_file TEXT")
+        except Exception:
+            pass
+        # Migration: add session_id column if not exists
+        try:
+            c.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+        except Exception:
+            pass
         c.execute("UPDATE tasks SET status='PENDING', pid=NULL, started_at=NULL WHERE status='RUNNING'")
 
 def insert_task(task):
     with connect() as c:
         c.execute(
-            "INSERT INTO tasks(id,prompt,status,workspace,log_file,max_retries,created_at) VALUES(?,?,?,?,?,?,?)",
-            (task["id"], task["prompt"], "PENDING", task["workspace"], task["log_file"], task["max_retries"], now())
+            "INSERT INTO tasks(id,prompt,status,workspace,log_file,trace_file,max_retries,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (task["id"], task["prompt"], "PENDING", task["workspace"], task["log_file"], task.get("trace_file", ""), task["max_retries"], now())
         )
 
 def get_task(task_id):
@@ -71,6 +83,10 @@ def claim_task():
 def set_pid(task_id, pid):
     with connect() as c:
         c.execute("UPDATE tasks SET pid=? WHERE id=?", (pid, task_id))
+
+def set_session_id(task_id, session_id):
+    with connect() as c:
+        c.execute("UPDATE tasks SET session_id=? WHERE id=?", (session_id, task_id))
 
 def finish_task(task_id, status, exit_code=None, error=None):
     with connect() as c:
@@ -120,6 +136,11 @@ def delete_task(task_id):
     log_file = Path(task["log_file"])
     if log_file.exists():
         log_file.unlink()
+
+    # Cleanup trace file
+    trace_file = Path(task.get("trace_file", ""))
+    if trace_file.exists():
+        trace_file.unlink()
 
     with connect() as c:
         cur = c.execute("DELETE FROM tasks WHERE id=?", (task_id,))

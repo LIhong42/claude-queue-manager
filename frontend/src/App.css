@@ -167,6 +167,75 @@ pre {
   background: #ddd;
 }
 
+.detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.btnTrace {
+  background: #4a90d9;
+  color: #fff;
+  margin-top: 8px;
+}
+
+.btnTrace:hover {
+  background: #3a7fc8;
+}
+
+.trace-panel {
+  margin-top: 16px;
+  border-top: 1px solid #eee;
+  padding-top: 12px;
+}
+
+.trace-panel h4 {
+  margin: 0 0 12px 0;
+  color: #333;
+}
+
+.trace-list {
+  max-height: 400px;
+  overflow: auto;
+  background: #f5f6f8;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.trace-item {
+  margin-bottom: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.trace-type {
+  font-size: 12px;
+  font-weight: bold;
+  padding: 6px 10px;
+  background: #ddd;
+  color: #333;
+  display: inline-block;
+  border-radius: 4px 4px 0 0;
+}
+
+.trace-content {
+  background: #1a1a1a;
+  color: #0f0;
+  padding: 10px;
+  margin: 0;
+  font-size: 12px;
+  max-height: 200px;
+  overflow: auto;
+  border-radius: 0 0 4px 4px;
+  white-space: pre-wrap;
+}
+
+.trace-tool_use .trace-type { background: #4caf50; color: #fff; }
+.trace-tool_result .trace-type { background: #ff9800; color: #fff; }
+.trace-assistant .trace-type { background: #2196f3; color: #fff; }
+.trace-usage .trace-type { background: #9c27b0; color: #fff; }
+.trace-content-block .trace-type { background: #00bcd4; color: #fff; }
+
 .table-actions {
   margin-bottom: 12px;
 }
@@ -211,6 +280,42 @@ pre {
 .pageInfo {
   color: #666;
   font-size: 14px;
+}
+
+.continue-panel {
+  margin-top: 16px;
+  border-top: 1px solid #eee;
+  padding-top: 12px;
+}
+
+.continue-panel h4 {
+  margin: 0 0 12px 0;
+  color: #333;
+}
+
+.continue-input {
+  width: 100%;
+  height: 80px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  resize: vertical;
+  font-family: inherit;
+  margin-bottom: 8px;
+}
+
+.btnContinue {
+  background: #4caf50;
+  color: #fff;
+}
+
+.btnContinue:hover:not(:disabled) {
+  background: #3d8b40;
+}
+
+.btnContinue:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 @media (max-width: 768px) {

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from .config import settings
 from .db import get_task, list_tasks, insert_task, retry_task, cancel_task, delete_task
+from .runner import continue_session
 from .events import events
 
 app = FastAPI(title="Claude Queue Manager")
@@ -22,6 +23,9 @@ class TaskCreate(BaseModel):
     prompt: str = Field(min_length=1)
     max_retries: int | None = Field(default=None, ge=0, le=20)
 
+class ContinueRequest(BaseModel):
+    message: str = Field(min_length=1)
+
 @app.get("/api/tasks")
 async def tasks():
     return list_tasks()
@@ -35,6 +39,7 @@ async def create_task(req: TaskCreate):
             "prompt": req.prompt,
             "workspace": str(settings.workspace_root / task_id),
             "log_file": str(settings.log_root / f"{task_id}.log"),
+            "trace_file": str(settings.log_root / f"{task_id}.trace.jsonl"),
             "max_retries": settings.max_retries if req.max_retries is None else req.max_retries,
         }
         insert_task(task)
@@ -58,6 +63,25 @@ async def log(task_id: str):
     p = Path(item["log_file"])
     return {"task_id":task_id, "log":p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""}
 
+@app.get("/api/tasks/{task_id}/trace")
+async def trace(task_id: str):
+    """返回结构化的执行过程（工具调用链等）"""
+    item = get_task(task_id)
+    if not item:
+        raise HTTPException(404, "Task not found")
+    trace_path = Path(item.get("trace_file", ""))
+    if not trace_path.exists():
+        return {"task_id": task_id, "trace": [], "has_trace": False}
+    lines = trace_path.read_text(encoding="utf-8", errors="replace").strip().split("\n")
+    events = []
+    for line in lines:
+        if line.strip():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return {"task_id": task_id, "trace": events, "has_trace": True}
+
 @app.post("/api/tasks/{task_id}/retry")
 async def retry(task_id: str):
     if not retry_task(task_id):
@@ -69,6 +93,19 @@ async def cancel(task_id: str):
     if not cancel_task(task_id):
         raise HTTPException(400, "Only PENDING tasks can be cancelled")
     return get_task(task_id)
+
+@app.post("/api/tasks/{task_id}/continue")
+async def continue_task(task_id: str, req: ContinueRequest):
+    """向现有 session 发送消息继续对话"""
+    item = get_task(task_id)
+    if not item:
+        raise HTTPException(404, "Task not found")
+    if not item.get("session_id"):
+        raise HTTPException(400, "No session_id found. Task may not have been run yet.")
+    result = await continue_session(item, req.message)
+    if "error" in result:
+        raise HTTPException(500, result["error"])
+    return {"status": "ok", "message": "Message sent to session"}
 
 @app.delete("/api/tasks/{task_id}")
 async def delete(task_id: str):
