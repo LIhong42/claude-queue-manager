@@ -323,3 +323,76 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- scheduled task UI --- */
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.form-row label {
+  font-size: 14px;
+  color: #444;
+}
+
+.form-row input[type="datetime-local"] {
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.form-row .form-hint {
+  font-size: 12px;
+  color: #777;
+}
+
+.badge-scheduled {
+  background: #cfe7ff;
+  color: #1d4f8a;
+}
+
+.badge-status.PENDING.with-schedule {
+  background: #cfe7ff;
+  color: #1d4f8a;
+}
+
+.schedule-cell {
+  font-size: 13px;
+  color: #333;
+}
+
+.schedule-cell .muted {
+  color: #999;
+}
+
+.schedule-cell .countdown {
+  font-size: 12px;
+  color: #1d4f8a;
+  margin-top: 2px;
+}
+
+.schedule-cell .ready-waiting {
+  font-size: 12px;
+  color: #b86a00;
+  margin-top: 2px;
+}
+
+.col-schedule {
+  min-width: 160px;
+}
+
+.scheduled-pill {
+  display: inline-block;
+  background: #cfe7ff;
+  color: #1d4f8a;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 6px;
+  vertical-align: middle;
+}

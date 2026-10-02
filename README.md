@@ -14,6 +14,8 @@ A local queue management platform for orchestrating Claude Agent (Claude Code CL
 - **Automatic Retry** — Failed tasks retry up to `MAX_RETRIES` times (default: 2)
 - **Startup Recovery** — Any tasks marked RUNNING on previous shutdown are reset to PENDING
 - **Session Continuation** — Reuse `session_id` to continue a conversation in the same Claude session
+- **Scheduled Start (Web + CLI)** — Each task can carry a `scheduled_at` timestamp; a dedicated worker claims the task **only when** the scheduled time has arrived **and** no other task is currently running (`status='RUNNING'` count == 0).
+- **CLI Submission** — Submit (optionally scheduled) tasks from the terminal via `cli/add.sh` (Linux/macOS/Git Bash) or `cli/add.bat` (Windows cmd).
 - **React Frontend** — Create, view, cancel, retry, and delete tasks; view raw logs and execution traces
 
 ---
@@ -102,16 +104,17 @@ python -m app
 ## Queue Mechanism
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   SQLite    │────▶│   Worker    │────▶│  Claude Session  │────▶│ SUCCESS / FAILED│
-│   Queue     │     │  (asyncio)  │     │  (subprocess)    │     │    / RETRY      │
-└─────────────┘     └─────────────┘     └──────────────────┘     └─────────────────┘
-     ▲                   │
-     │                   ↓
-     │            ┌─────────────┐
-     └────────────│  Auto-Claim │
-                  │  Next Task  │
-                  └─────────────┘
+┌─────────────┐     ┌────────────────────────┐     ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   SQLite    │────▶│  normal  workers  ───▶│  Worker  │────▶│  Claude Session  │────▶│ SUCCESS / FAILED│
+│   Queue     │     │ (skip  scheduled_at)   │ (asyncio) │     │  (subprocess)    │     │    / RETRY      │
+└─────────────┘     └────────────────────────┘     └─────────────┘     └──────────────────┘     └─────────────────┘
+       ▲                                                    │
+       │                                                    ↓
+┌─  scheduled  ──┐     ┌────────────────────────┐     ┌─────────────┐
+│   worker       │     │  due check + idle gate  │     │  Auto-Claim │
+│                 └────▶│  scheduled_at <= now    │────▶│  Next Task  │
+└────────────────────┘     │  AND count(RUNNING)=0   │     └─────────────┘
+                            └────────────────────────────────────┘
 ```
 
 - Tasks are stored in **SQLite** with states: `PENDING`, `RUNNING`, `SUCCESS`, `FAILED`, `CANCELLED`
@@ -119,6 +122,7 @@ python -m app
 - Each task gets an **isolated workspace** under `./workspace/<task_id>/`
 - Logs are written to `./logs/<task_id>.log` and traces to `./logs/<task_id>.trace.jsonl`
 - The frontend connects via **WebSocket** for real-time updates (polls `/api/tasks` every 3s)
+- A dedicated **scheduled worker** runs alongside the normal workers. It only picks a task whose `scheduled_at` has passed **and** only after `count(RUNNING) == 0`. This enforces "one scheduled task at a time, with the system fully idle".
 
 ---
 
@@ -127,7 +131,7 @@ python -m app
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/tasks` | List all tasks (paginated) |
-| `POST` | `/api/tasks` | Create a new task |
+| `POST` | `/api/tasks` | Create a new task. Body: `{ "prompt": "...", "max_retries"?: int, "scheduled_at"?: ISO-8601 datetime }`. When `scheduled_at` is set in the future, a `task_scheduled` event is broadcast; otherwise `task_created`. |
 | `GET` | `/api/tasks/{id}` | Get task details |
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
 | `POST` | `/api/tasks/{id}/cancel` | Cancel a running task |
@@ -135,6 +139,37 @@ python -m app
 | `POST` | `/api/tasks/{id}/continue` | Continue in the same session |
 | `GET` | `/api/tasks/{id}/logs` | Stream raw log file |
 | `WS` | `/ws` | Real-time event stream |
+
+## CLI Usage
+
+Both CLI scripts hit `POST /api/tasks` via HTTP. The backend must be running.
+
+```bash
+# Immediate
+./cli/add.sh "echo hello from cli"
+
+# Scheduled (local time)
+./cli/add.sh "review code" "2026-10-02 15:30:00"
+
+# Read prompt from file
+./cli/add.sh -f prompt.txt
+
+# Scheduled + from file
+./cli/add.sh -f prompt.txt "2026-10-02 23:00"
+
+# Remote backend
+BASE_URL=http://192.168.1.10:8000 ./cli/add.sh "remote task"
+```
+
+Windows (cmd.exe):
+
+```bat
+cli\add.bat "echo hello"
+cli\add.bat "review code" "2026-10-02 15:30:00"
+set BASE_URL=http://192.168.1.10:8000 && cli\add.bat "remote task" "2026-10-02 15:30:00"
+```
+
+> Time semantics: a string without a timezone suffix (e.g. `"2026-10-02 15:30:00"`) is interpreted in the **local timezone** of the CLI host, then converted to UTC and stored. Pass an explicit offset (`"2026-10-02T15:30:00+08:00"`) for unambiguous behavior.
 
 ---
 

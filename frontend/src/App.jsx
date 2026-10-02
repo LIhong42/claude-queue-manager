@@ -3,9 +3,65 @@ import { api, ws } from './api.js'
 
 const PAGE_SIZE = 4
 
+// datetime-local strings are local-time, formatted like "2026-10-02T15:30".
+// We round-trip through the browser timezone so the user sees what they typed.
+function localInputFromAny(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function isoFromLocalInput(localStr) {
+  if (!localStr) return null
+  // The string has no tz — interpret in the browser's local timezone.
+  const d = new Date(localStr)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toISOString()
+}
+
+function formatAbsolute(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function Countdown({ to, runningCount }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+  if (!to) return null
+  const target = new Date(to).getTime()
+  const now = Date.now()
+  const diff = target - now
+  if (diff > 0) {
+    const totalSec = Math.floor(diff / 1000)
+    const days = Math.floor(totalSec / 86400)
+    const hours = Math.floor((totalSec % 86400) / 3600)
+    const minutes = Math.floor((totalSec % 3600) / 60)
+    const seconds = totalSec % 60
+    let partsArr
+    if (days > 0) partsArr = [`${days}天`, `${hours}小时`, `${minutes}分`, `${seconds}秒`]
+    else if (hours > 0) partsArr = [`${hours}小时`, `${minutes}分`, `${seconds}秒`]
+    else partsArr = [`${minutes}分`, `${seconds}秒`]
+    return <div className="countdown">⏱ {partsArr.join(' ')} 后执行</div>
+  }
+  // Already due — show "ready, waiting on idle" if anything is running
+  if (runningCount > 0) {
+    return <div className="ready-waiting">⏸ 就绪，等待系统空闲</div>
+  }
+  return <div className="ready-waiting">⏳ 即将开始</div>
+}
+
 function App() {
   const [tasks, setTasks] = useState([])
   const [prompt, setPrompt] = useState('')
+  const [scheduledAt, setScheduledAt] = useState('')
   const [msg, setMsg] = useState('')
   const [selectedTask, setSelectedTask] = useState(null)
   const [showTrace, setShowTrace] = useState(false)
@@ -33,24 +89,27 @@ function App() {
   const createTask = async () => {
     const trimmed = prompt.trim()
     if (!trimmed) return
+    const iso = isoFromLocalInput(scheduledAt)
     try {
-      const r = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: trimmed })
-      })
-      if (r.ok) {
+      const r = await api.createTask(trimmed, undefined, iso)
+      if (r && r.id) {
         setPrompt('')
-        setMsg(' 已加入队列')
+        setScheduledAt('')
+        setMsg(iso ? ' 已加入调度队列' : ' 已加入队列')
         setTimeout(() => setMsg(''), 1500)
         loadTasks()
+      } else if (r && r.detail) {
+        // FastAPI validation error
+        setMsg(' 错误: ' + r.detail)
+        setTimeout(() => setMsg(''), 5000)
       } else {
-        const err = await r.text()
-        setMsg(' 错误: ' + r.status + ' ' + err)
+        setMsg(' 错误: ' + JSON.stringify(r))
         setTimeout(() => setMsg(''), 5000)
       }
     } catch (e) {
       console.error(e)
+      setMsg(' 错误: ' + e.message)
+      setTimeout(() => setMsg(''), 5000)
     }
   }
 
@@ -121,7 +180,21 @@ function App() {
   const completedTasks = tasks.filter(t => t.status === 'SUCCESS' || t.status === 'COMPLETED' || t.status === 'FAILED' || t.status === 'CANCELLED')
   const pendingTasks = tasks.filter(t => t.status === 'PENDING')
 
-  const TaskTable = ({ title, taskList, page, setPage, showDelete = false, showDeleteAll = false }) => {
+  const ScheduleCell = ({ task }) => {
+    if (!task.scheduled_at) {
+      return <span className="muted">—</span>
+    }
+    return (
+      <div className="schedule-cell">
+        <div>{formatAbsolute(task.scheduled_at)}</div>
+        {task.status === 'PENDING' && (
+          <Countdown to={task.scheduled_at} runningCount={runningTasks.length} />
+        )}
+      </div>
+    )
+  }
+
+  const TaskTable = ({ title, taskList, page, setPage, showDelete = false, showDeleteAll = false, showSchedule = false }) => {
     const totalPages = Math.max(1, Math.ceil(taskList.length / PAGE_SIZE))
     const safePage = Math.min(page, totalPages)
     const startIdx = (safePage - 1) * PAGE_SIZE
@@ -157,6 +230,7 @@ function App() {
                   <tr>
                     <th>ID</th>
                     <th>状态</th>
+                    {showSchedule && <th className="col-schedule">计划执行</th>}
                     <th>重试</th>
                     <th>操作</th>
                   </tr>
@@ -169,11 +243,26 @@ function App() {
                           {t.id}
                         </a>
                       </td>
-                      <td><span className="badge">{t.status}</span></td>
+                      <td>
+                        <span className={`badge badge-status ${t.scheduled_at ? 'with-schedule' : ''}`}>
+                          {t.status}
+                          {t.scheduled_at && t.status === 'PENDING' && (
+                            <span className="scheduled-pill">定时</span>
+                          )}
+                        </span>
+                      </td>
+                      {showSchedule && (
+                        <td className="col-schedule">
+                          <ScheduleCell task={t} />
+                        </td>
+                      )}
                       <td>{t.retry_count}/{t.max_retries}</td>
                       <td>
                         {t.status === 'FAILED' && (
                           <button className="btnRetry" onClick={retryTask(t.id)}>重试</button>
+                        )}
+                        {t.status === 'PENDING' && (
+                          <button className="btnCancel" onClick={cancelTask(t.id)}>取消</button>
                         )}
                         {showDelete && (
                           <button className="btnDelete" onClick={deleteTask(t.id)}>删除</button>
@@ -220,14 +309,30 @@ function App() {
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
           />
-          <br /><br />
+          <div className="form-row">
+            <label htmlFor="scheduled-at">计划执行时间（留空 = 立即）：</label>
+            <input
+              id="scheduled-at"
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={e => setScheduledAt(e.target.value)}
+            />
+            <span className="form-hint">
+              {scheduledAt
+                  ? `将在本地时间 ${scheduledAt.replace('T', ' ')} 之后，且系统空闲时执行`
+                  : '系统空闲 = 当前没有 RUNNING 任务'}
+            </span>
+            {scheduledAt && (
+              <button className="btnClose" onClick={() => setScheduledAt('')}>清除</button>
+            )}
+          </div>
           <button className="primary" onClick={createTask}>加入队列</button>
           <span className="msg">{msg}</span>
         </div>
         <div className="grid-3">
           <TaskTable title="正在运行" taskList={runningTasks} page={runningPage} setPage={setRunningPage} />
           <TaskTable title="已完成" taskList={completedTasks} page={completedPage} setPage={setCompletedPage} showDelete={true} showDeleteAll={true} />
-          <TaskTable title="待完成任务" taskList={pendingTasks} page={pendingPage} setPage={setPendingPage} showDelete={true} />
+          <TaskTable title="待完成任务" taskList={pendingTasks} page={pendingPage} setPage={setPendingPage} showDelete={true} showSchedule={true} />
         </div>
         {selectedTask && (
           <div className="card">
@@ -236,8 +341,22 @@ function App() {
               <strong>ID:</strong> {selectedTask.id}
             </div>
             <div className="detail-item">
-              <strong>状态:</strong> <span className="badge">{selectedTask.status}</span>
+              <strong>状态:</strong> <span className={`badge badge-status ${selectedTask.scheduled_at ? 'with-schedule' : ''}`}>
+                {selectedTask.status}
+                {selectedTask.scheduled_at && selectedTask.status === 'PENDING' && (
+                  <span className="scheduled-pill">定时</span>
+                )}
+              </span>
             </div>
+            {selectedTask.scheduled_at && (
+              <div className="detail-item">
+                <strong>计划执行时间:</strong>
+                <div>{formatAbsolute(selectedTask.scheduled_at)}</div>
+                {selectedTask.status === 'PENDING' && (
+                  <Countdown to={selectedTask.scheduled_at} runningCount={runningTasks.length} />
+                )}
+              </div>
+            )}
             <div className="detail-item">
               <strong>描述:</strong>
               <pre className="prompt-box">{selectedTask.prompt}</pre>

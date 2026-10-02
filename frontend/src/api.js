@@ -3,10 +3,10 @@ const WS_BASE = window.location.protocol === 'https:' ? 'wss://' : 'ws://' + win
 
 export const api = {
   listTasks: () => fetch(`${API_BASE}/api/tasks`).then(r => r.json()),
-  createTask: (prompt, max_retries) => fetch(`${API_BASE}/api/tasks`, {
+  createTask: (prompt, max_retries, scheduled_at) => fetch(`${API_BASE}/api/tasks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, max_retries })
+    body: JSON.stringify({ prompt, max_retries, scheduled_at: scheduled_at || null })
   }).then(r => r.json()),
   getTask: (id) => fetch(`${API_BASE}/api/tasks/${id}`).then(r => r.json()),
   getTaskLog: (id) => fetch(`${API_BASE}/api/tasks/${id}/log`).then(r => r.json()),

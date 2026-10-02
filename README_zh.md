@@ -14,6 +14,8 @@
 - **自动重试** — 失败任务最多重试 `MAX_RETRIES` 次（默认：2）
 - **启动恢复** — 启动时将上次标记为 RUNNING 的任务重置为 PENDING
 - **会话续接** — 复用 `session_id` 在同一 Claude 会话中继续对话
+- **定时启动（Web + CLI）** — 每个任务可设置 `scheduled_at`。**只有当**计划时间到达 **且** 系统当前没有任何 RUNNING 任务时，专属的调度 worker 才会领取并执行它。
+- **命令行提交** — 通过 `cli/add.sh`（Linux/macOS/Git Bash）或 `cli/add.bat`（Windows cmd）在命令行界面提交（可定时）任务。
 - **React 前端** — 创建、查看、取消、重试、删除任务；查看日志和执行Trace
 
 ---
@@ -102,16 +104,17 @@ python -m app
 ## 队列机制
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   SQLite    │────▶│   Worker    │────▶│  Claude Session  │────▶│ SUCCESS / FAILED│
-│   Queue     │     │  (asyncio)  │     │  (subprocess)    │     │    / RETRY      │
-└─────────────┘     └─────────────┘     └──────────────────┘     └─────────────────┘
-     ▲                   │
-     │                   ↓
-     │            ┌─────────────┐
-     └────────────│  自动领取   │
-                  │  下一任务   │
-                  └─────────────┘
+┌─────────────┐     ┌─────────────────────────┐     ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   SQLite    │────▶│  normal workers  ────▶ │  Worker  │────▶│  Claude Session  │────▶│ SUCCESS / FAILED│
+│   Queue     │     │ (跳过定时任务)         │ (asyncio)│     │  (subprocess)    │     │    / RETRY      │
+└─────────────┘     └─────────────────────────┘     └─────────────┘     └──────────────────┘     └─────────────────┘
+       ▲                                                       │
+       │                                                        ↓
+┌─  scheduled  ──┐     ┌────────────────────────┐     ┌─────────────┐
+│    worker       │     │  到点检查 + 空闲闸门   │     │  自动领取   │
+│                  └────▶│  scheduled_at ≤ now     │────▶│  下一任务   │
+└─────────────────────┘  │  AND count(RUNNING)=0  │     └─────────────┘
+                          └────────────────────────────────────────────┘
 ```
 
 - 任务状态存储在 **SQLite** 中： `PENDING`、`RUNNING`、`SUCCESS`、`FAILED`、`CANCELLED`
@@ -119,6 +122,7 @@ python -m app
 - 每个任务在 `./workspace/<task_id>/` 下拥有**独立 workspace**
 - 日志写入 `./logs/<task_id>.log`，Trace 写入 `./logs/<task_id>.trace.jsonl`
 - 前端通过 **WebSocket** 接收实时更新（每 3 秒轮询 `/api/tasks`）
+- **专有的**调度 worker 与普通 worker 并发运行，它仅领取 `scheduled_at <= now` 且 `count(RUNNING) == 0` 的任务，从而实现"一次只跑一个调度任务，且系统完全空闲"的语义。
 
 ---
 
@@ -127,7 +131,7 @@ python -m app
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | `GET` | `/api/tasks` | 获取任务列表（分页） |
-| `POST` | `/api/tasks` | 创建新任务 |
+| `POST` | `/api/tasks` | 创建新任务。Body: `{ "prompt": "...", "max_retries"?: int, "scheduled_at"?: ISO-8601 datetime }`。当 `scheduled_at` 为未来时间时广播 `task_scheduled`，否则广播 `task_created`。 |
 | `GET` | `/api/tasks/{id}` | 获取任务详情 |
 | `DELETE` | `/api/tasks/{id}` | 删除任务 |
 | `POST` | `/api/tasks/{id}/cancel` | 取消运行中任务 |
@@ -135,6 +139,37 @@ python -m app
 | `POST` | `/api/tasks/{id}/continue` | 在同一会话中继续 |
 | `GET` | `/api/tasks/{id}/logs` | 流式获取原始日志 |
 | `WS` | `/ws` | 实时事件流 |
+
+## 命令行使用
+
+CLI 脚本通过 HTTP 调用 `POST /api/tasks`，所以后端必须先启动。
+
+```bash
+# 立即加入队列
+./cli/add.sh "echo hello from cli"
+
+# 定时执行（按本机本地时间解释）
+./cli/add.sh "review code" "2026-10-02 15:30:00"
+
+# 从文件读取 prompt
+./cli/add.sh -f prompt.txt
+
+# 定时 + 文件
+./cli/add.sh -f prompt.txt "2026-10-02 23:00"
+
+# 远程后端
+BASE_URL=http://192.168.1.10:8000 ./cli/add.sh "remote task"
+```
+
+Windows (cmd.exe)：
+
+```bat
+cli\add.bat "echo hello"
+cli\add.bat "review code" "2026-10-02 15:30:00"
+set BASE_URL=http://192.168.1.10:8000 && cli\add.bat "remote task" "2026-10-02 15:30:00"
+```
+
+> 时间语义：不带时区后缀的字符串（如 `"2026-10-02 15:30:00"`）按 **CLI 主机本地时区** 解释，转 UTC 后存入；想要明确时区请使用带时区后缀的 ISO 字符串（例如 `"2026-10-02T15:30:00+08:00"`）。
 
 ---
 

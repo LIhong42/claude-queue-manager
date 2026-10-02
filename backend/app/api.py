@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,7 @@ app.add_middleware(
 class TaskCreate(BaseModel):
     prompt: str = Field(min_length=1)
     max_retries: int | None = Field(default=None, ge=0, le=20)
+    scheduled_at: datetime | None = Field(default=None, description="ISO-8601 datetime; if provided with timezone it will be honored. Naive datetimes are interpreted as UTC.")
 
 class ContinueRequest(BaseModel):
     message: str = Field(min_length=1)
@@ -34,6 +36,18 @@ async def tasks():
 async def create_task(req: TaskCreate):
     try:
         task_id = uuid.uuid4().hex[:12]
+        scheduled_iso = None
+        is_scheduled_future = False
+        if req.scheduled_at is not None:
+            dt = req.scheduled_at
+            # Naive datetime => treat as UTC (per Pydantic convention; warn via docstring).
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            scheduled_iso = dt.isoformat()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            is_scheduled_future = scheduled_iso > now_iso
         task = {
             "id": task_id,
             "prompt": req.prompt,
@@ -41,9 +55,13 @@ async def create_task(req: TaskCreate):
             "log_file": str(settings.log_root / f"{task_id}.log"),
             "trace_file": str(settings.log_root / f"{task_id}.trace.jsonl"),
             "max_retries": settings.max_retries if req.max_retries is None else req.max_retries,
+            "scheduled_at": scheduled_iso,
         }
         insert_task(task)
-        await events.publish({"type":"task_created","task_id":task_id})
+        if is_scheduled_future:
+            await events.publish({"type":"task_scheduled","task_id":task_id,"scheduled_at":scheduled_iso})
+        else:
+            await events.publish({"type":"task_created","task_id":task_id})
         return get_task(task_id)
     except Exception as e:
         raise HTTPException(500, f"创建任务失败: {str(e)}")

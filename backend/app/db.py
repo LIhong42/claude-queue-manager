@@ -32,7 +32,8 @@ def init_db():
             created_at TEXT NOT NULL,
             started_at TEXT,
             finished_at TEXT,
-            error TEXT
+            error TEXT,
+            scheduled_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
         """)
@@ -46,13 +47,25 @@ def init_db():
             c.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
         except Exception:
             pass
+        # Migration: add scheduled_at column if not exists
+        try:
+            c.execute("ALTER TABLE tasks ADD COLUMN scheduled_at TEXT")
+        except Exception:
+            pass
+        # Make sure the composite index exists (older DBs predate it).
+        # Wrapped in try/except because if scheduled_at was JUST added above, this is a no-op,
+        # otherwise on legacy DBs the index may already exist or may not exist.
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_scheduled ON tasks(status, scheduled_at, created_at)")
+        except Exception:
+            pass
         c.execute("UPDATE tasks SET status='PENDING', pid=NULL, started_at=NULL WHERE status='RUNNING'")
 
 def insert_task(task):
     with connect() as c:
         c.execute(
-            "INSERT INTO tasks(id,prompt,status,workspace,log_file,trace_file,max_retries,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (task["id"], task["prompt"], "PENDING", task["workspace"], task["log_file"], task.get("trace_file", ""), task["max_retries"], now())
+            "INSERT INTO tasks(id,prompt,status,workspace,log_file,trace_file,max_retries,created_at,scheduled_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (task["id"], task["prompt"], "PENDING", task["workspace"], task["log_file"], task.get("trace_file", ""), task["max_retries"], now(), task.get("scheduled_at"))
         )
 
 def get_task(task_id):
@@ -65,9 +78,12 @@ def list_tasks():
         return [dict(r) for r in c.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()]
 
 def claim_task():
+    """普通 worker 领取：仅领取未定时 (scheduled_at IS NULL) 的 PENDING 任务，按 FIFO。"""
     with connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM tasks WHERE status='PENDING' ORDER BY created_at ASC LIMIT 1").fetchone()
+        row = c.execute(
+            "SELECT * FROM tasks WHERE status='PENDING' AND scheduled_at IS NULL ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
         if not row:
             c.commit()
             return None
@@ -79,6 +95,34 @@ def claim_task():
         c.commit()
         row = c.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         return dict(row)
+
+def claim_scheduled_task():
+    """调度 worker 领取：仅领取调度时间已到 (scheduled_at <= now) 的 PENDING 任务。
+    调用方必须在调用前/后用 count_running() > 0 检查全局闸门（"这里仅调度任务独占 worker"）。
+    """
+    with connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT * FROM tasks WHERE status='PENDING' AND scheduled_at IS NOT NULL AND scheduled_at <= ? ORDER BY scheduled_at ASC, created_at ASC LIMIT 1",
+            (now(),)
+        ).fetchone()
+        if not row:
+            c.commit()
+            return None
+        task_id = row["id"]
+        c.execute(
+            "UPDATE tasks SET status='RUNNING', started_at=?, pid=NULL WHERE id=? AND status='PENDING'",
+            (now(), task_id)
+        )
+        c.commit()
+        row = c.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        return dict(row)
+
+def count_running():
+    """返回当前 status='RUNNING' 的任务数。供调度 worker 在领取前/后确认系统空闲。"""
+    with connect() as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM tasks WHERE status='RUNNING'").fetchone()
+        return row["n"]
 
 def set_pid(task_id, pid):
     with connect() as c:
